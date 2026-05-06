@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-
 
 MANIFEST_TAG = "artifacts-catalog"
 CHECKSUMS_TAG = "artifacts-checksums"
@@ -40,7 +39,11 @@ class OrasError(Exception):
     stderr: str
 
     def __str__(self) -> str:
-        detail = self.stderr.strip() or self.stdout.strip() or f"oras exited with status {self.returncode}"
+        detail = (
+            self.stderr.strip()
+            or self.stdout.strip()
+            or f"oras exited with status {self.returncode}"
+        )
         return detail
 
 
@@ -67,7 +70,9 @@ class OrasRunner:
                 stdout=exc.stdout or "",
                 stderr=exc.stderr or "",
             ) from exc
-        return CommandResult(args=[self.executable, *args], stdout=completed.stdout, stderr=completed.stderr)
+        return CommandResult(
+            args=[self.executable, *args], stdout=completed.stdout, stderr=completed.stderr
+        )
 
     def push_file(self, repository: str, tag: str, path: Path, media_type: str) -> CommandResult:
         resolved = path.resolve()

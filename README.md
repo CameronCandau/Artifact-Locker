@@ -100,3 +100,25 @@ format.
 python -m pytest
 python -m build
 ```
+
+For local commit-time linting, install the pre-commit hook once:
+
+```bash
+pip install -e .[dev]
+pre-commit install
+```
+
+Then before each commit, the hook will run Ruff automatically. You can also run
+it manually:
+
+```bash
+pre-commit run --all-files
+```
+
+For local push-time test gating, install the repo pre-push hook:
+
+```bash
+ln -sf ../../scripts/pre-push .git/hooks/pre-push
+```
+
+That hook runs `pytest` from `venv/bin/pytest` when available.

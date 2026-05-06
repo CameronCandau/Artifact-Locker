@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+if [[ -x "venv/bin/pytest" ]]; then
+  exec venv/bin/pytest
+fi
+
+if command -v pytest >/dev/null 2>&1; then
+  exec pytest
+fi
+
+echo "pytest not found. Create the repo venv and install dev dependencies first:" >&2
+echo "  python3 -m venv venv" >&2
+echo "  venv/bin/pip install -e .[dev]" >&2
+exit 1

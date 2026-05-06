@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 import json
 import shutil
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from .models import Artifact, Provenance, compute_sha256, load_checksums, load_manifest, next_artifact_id, write_checksums, write_manifest
+from .models import (
+    Artifact,
+    Provenance,
+    compute_sha256,
+    load_checksums,
+    load_manifest,
+    next_artifact_id,
+    write_checksums,
+    write_manifest,
+)
 from .oci import (
     ARTIFACT_MEDIA_TYPE,
     CHECKSUMS_MEDIA_TYPE,
@@ -28,14 +37,15 @@ from .output import print_json
 from .paths import RepoPaths, catalog_exists, discover_repo_paths, init_repo, load_config
 from .state import LocalStateRecord, load_state, make_state_record, write_state
 
-
 PLATFORM_CHOICES = ["windows", "linux", "macos", "cross-platform"]
 CATEGORY_CHOICES = ["bin", "script", "archive", "doc", "source", "other"]
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="artifact-locker")
-    parser.add_argument("--catalog", dest="catalog_path", help="Path to an alternate catalog directory")
+    parser.add_argument(
+        "--catalog", dest="catalog_path", help="Path to an alternate catalog directory"
+    )
     parser.add_argument("--root", dest="catalog_legacy", help=argparse.SUPPRESS)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -196,7 +206,9 @@ def materialize_artifact_bytes(
     payload_destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_path, payload_destination)
     if artifact.sha256:
-        state[artifact.artifact_id] = make_state_record(artifact.artifact_id, payload_destination, artifact.sha256)
+        state[artifact.artifact_id] = make_state_record(
+            artifact.artifact_id, payload_destination, artifact.sha256
+        )
 
 
 def sync_checksums(paths: RepoPaths, artifacts: list[Artifact]) -> None:
@@ -204,7 +216,9 @@ def sync_checksums(paths: RepoPaths, artifacts: list[Artifact]) -> None:
     write_checksums(paths.checksums_path, artifacts)
 
 
-def load_repo(paths: RepoPaths) -> tuple[dict[str, Any], list[Artifact], dict[str, str], dict[str, LocalStateRecord]]:
+def load_repo(
+    paths: RepoPaths,
+) -> tuple[dict[str, Any], list[Artifact], dict[str, str], dict[str, LocalStateRecord]]:
     if not catalog_exists(paths):
         init_repo(paths.root)
     config = load_config(paths)
@@ -214,7 +228,9 @@ def load_repo(paths: RepoPaths) -> tuple[dict[str, Any], list[Artifact], dict[st
     return config, artifacts, checksums, state
 
 
-def verify_catalog(paths: RepoPaths, artifacts: list[Artifact], checksums: dict[str, str]) -> list[str]:
+def verify_catalog(
+    paths: RepoPaths, artifacts: list[Artifact], checksums: dict[str, str]
+) -> list[str]:
     issues: list[str] = []
     seen_ids: set[str] = set()
     staged_names = {artifact.staged_name for artifact in artifacts if artifact.staged_name}
@@ -254,7 +270,11 @@ def verify_remote_catalog(artifacts: list[Artifact], checksums: dict[str, str]) 
             issues.append(f"duplicate artifact_id: {artifact.artifact_id}")
         seen_ids.add(artifact.artifact_id)
         issues.extend(artifact.validate())
-        if artifact.sha256 and artifact.staged_name and checksums.get(artifact.staged_name) != artifact.sha256:
+        if (
+            artifact.sha256
+            and artifact.staged_name
+            and checksums.get(artifact.staged_name) != artifact.sha256
+        ):
             issues.append(f"checksum entry mismatch for {artifact.artifact_id}")
     for name in sorted(checksums):
         if name not in staged_names:
@@ -363,7 +383,9 @@ def command_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def resolve_add_inputs(args: argparse.Namespace, artifacts: list[Artifact]) -> tuple[Path | None, str | None, str, dict[str, Any]]:
+def resolve_add_inputs(
+    args: argparse.Namespace, artifacts: list[Artifact]
+) -> tuple[Path | None, str | None, str, dict[str, Any]]:
     source = args.source
     uri = args.uri
     local_source: Path | None = None
@@ -386,7 +408,9 @@ def resolve_add_inputs(args: argparse.Namespace, artifacts: list[Artifact]) -> t
                 if not local_source.is_file():
                     raise SystemExit(f"source file not found: {local_source}")
 
-    default_filename = args.filename or infer_filename(str(local_source) if local_source else source, uri)
+    default_filename = args.filename or infer_filename(
+        str(local_source) if local_source else source, uri
+    )
     filename = default_filename
     if interactive and not filename:
         filename = prompt_text("Filename", allow_empty=False)
@@ -405,7 +429,9 @@ def resolve_add_inputs(args: argparse.Namespace, artifacts: list[Artifact]) -> t
 
     kind = infer_provenance_kind(str(local_source) if local_source else source, uri, args)
     if interactive and args.provenance_kind is None:
-        prompted_kind = prompt_choice("Provenance kind", ["local", "download", "built"], default=kind)
+        prompted_kind = prompt_choice(
+            "Provenance kind", ["local", "download", "built"], default=kind
+        )
         if prompted_kind:
             kind = prompted_kind
     if interactive and uri is None and kind == "download":
@@ -446,8 +472,14 @@ def command_add(args: argparse.Namespace) -> int:
             issues = artifact.validate()
             if issues:
                 raise SystemExit("; ".join(issues))
-            if any(existing.filename == artifact.filename and existing.provenance.uri == artifact.provenance.uri for existing in artifacts):
-                raise SystemExit(f"artifact already exists for filename/url pair: {artifact.filename}")
+            if any(
+                existing.filename == artifact.filename
+                and existing.provenance.uri == artifact.provenance.uri
+                for existing in artifacts
+            ):
+                raise SystemExit(
+                    f"artifact already exists for filename/url pair: {artifact.filename}"
+                )
             materialize_artifact_bytes(paths, config, state, artifact, downloaded_path)
             artifacts.append(artifact)
             sync_checksums(paths, artifacts)
@@ -462,7 +494,11 @@ def command_add(args: argparse.Namespace) -> int:
     issues = artifact.validate()
     if issues:
         raise SystemExit("; ".join(issues))
-    if any(existing.filename == artifact.filename and existing.provenance.uri == artifact.provenance.uri for existing in artifacts):
+    if any(
+        existing.filename == artifact.filename
+        and existing.provenance.uri == artifact.provenance.uri
+        for existing in artifacts
+    ):
         raise SystemExit(f"artifact already exists for filename/url pair: {artifact.filename}")
     if materialized_source and artifact.staged_name:
         materialize_artifact_bytes(paths, config, state, artifact, materialized_source)
@@ -537,7 +573,9 @@ def command_find(args: argparse.Namespace) -> int:
     status_by_id = {row["artifact_id"]: row["status"] for row in rows}
     matches = [
         present_artifact_row(status_by_id, artifact)
-        for artifact in filter_artifacts(artifacts, query=args.query, platform=args.platform, category=args.category)
+        for artifact in filter_artifacts(
+            artifacts, query=args.query, platform=args.platform, category=args.category
+        )
     ]
     if args.json:
         print_json(matches)
@@ -552,9 +590,14 @@ def command_show(args: argparse.Namespace) -> int:
     config, artifacts, _, state = load_repo(paths)
     artifact = resolve_artifact(artifacts, args.query)
     status = next(
-        row for row in local_statuses(paths, config, [artifact], state) if row["artifact_id"] == artifact.artifact_id
+        row
+        for row in local_statuses(paths, config, [artifact], state)
+        if row["artifact_id"] == artifact.artifact_id
     )
-    payload = artifact.to_dict() | {"local_status": status["status"], "expected_path": status["expected_path"]}
+    payload = artifact.to_dict() | {
+        "local_status": status["status"],
+        "expected_path": status["expected_path"],
+    }
     if args.json:
         print_json(payload)
     else:
@@ -657,20 +700,35 @@ def command_push(args: argparse.Namespace) -> int:
     tag = args.tag or default_push_tag()
     try:
         runner.push_file(repository, MANIFEST_TAG, paths.manifest_path, MANIFEST_MEDIA_TYPE)
-        runner.push_file(repository, manifest_versioned_tag(tag), paths.manifest_path, MANIFEST_MEDIA_TYPE)
+        runner.push_file(
+            repository, manifest_versioned_tag(tag), paths.manifest_path, MANIFEST_MEDIA_TYPE
+        )
         runner.push_file(repository, CHECKSUMS_TAG, paths.checksums_path, CHECKSUMS_MEDIA_TYPE)
-        runner.push_file(repository, checksums_versioned_tag(tag), paths.checksums_path, CHECKSUMS_MEDIA_TYPE)
+        runner.push_file(
+            repository, checksums_versioned_tag(tag), paths.checksums_path, CHECKSUMS_MEDIA_TYPE
+        )
         for artifact in artifacts:
             if artifact.sha256 and artifact.staged_name:
-                runner.push_file(repository, artifact.artifact_id, staged_path(paths, artifact), ARTIFACT_MEDIA_TYPE)
+                runner.push_file(
+                    repository,
+                    artifact.artifact_id,
+                    staged_path(paths, artifact),
+                    ARTIFACT_MEDIA_TYPE,
+                )
     except OrasError as error:
         failed_tag = tag
         command_text = " ".join(error.command)
-        for candidate in [MANIFEST_TAG, manifest_versioned_tag(tag), CHECKSUMS_TAG, checksums_versioned_tag(tag), *[artifact.artifact_id for artifact in artifacts]]:
+        for candidate in [
+            MANIFEST_TAG,
+            manifest_versioned_tag(tag),
+            CHECKSUMS_TAG,
+            checksums_versioned_tag(tag),
+            *[artifact.artifact_id for artifact in artifacts],
+        ]:
             if candidate in command_text:
                 failed_tag = candidate
                 break
-        raise SystemExit(describe_registry_push_error(repository, failed_tag, error))
+        raise SystemExit(describe_registry_push_error(repository, failed_tag, error)) from error
     print(f"pushed catalog to {repository} with tag {tag}")
     return 0
 
@@ -700,11 +758,15 @@ def command_pull(args: argparse.Namespace) -> int:
         try:
             runner.pull_to_dir(repository, MANIFEST_TAG, manifest_dir)
         except OrasError as error:
-            raise SystemExit(describe_registry_pull_error(repository, MANIFEST_TAG, error))
+            raise SystemExit(
+                describe_registry_pull_error(repository, MANIFEST_TAG, error)
+            ) from error
         try:
             runner.pull_to_dir(repository, CHECKSUMS_TAG, checksums_dir)
         except OrasError as error:
-            raise SystemExit(describe_registry_pull_error(repository, CHECKSUMS_TAG, error))
+            raise SystemExit(
+                describe_registry_pull_error(repository, CHECKSUMS_TAG, error)
+            ) from error
         manifest_file = find_downloaded_file(manifest_dir, "artifacts.json")
         checksums_file = find_downloaded_file(checksums_dir, "checksums.txt")
         shutil.copy2(manifest_file, paths.manifest_path)
@@ -729,7 +791,9 @@ def command_pull(args: argparse.Namespace) -> int:
             try:
                 runner.pull_to_dir(repository, artifact.artifact_id, asset_dir)
             except OrasError as error:
-                raise SystemExit(describe_registry_pull_error(repository, artifact.artifact_id, error))
+                raise SystemExit(
+                    describe_registry_pull_error(repository, artifact.artifact_id, error)
+                ) from error
             fetched = find_downloaded_file(asset_dir)
             actual = compute_sha256(fetched)
             if actual != artifact.sha256:
@@ -740,7 +804,9 @@ def command_pull(args: argparse.Namespace) -> int:
             payload_destination = local_artifact_path(paths, config, artifact)
             payload_destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(fetched, payload_destination)
-            state[artifact.artifact_id] = make_state_record(artifact.artifact_id, payload_destination, artifact.sha256)
+            state[artifact.artifact_id] = make_state_record(
+                artifact.artifact_id, payload_destination, artifact.sha256
+            )
             downloaded.append(
                 {
                     "artifact_id": artifact.artifact_id,

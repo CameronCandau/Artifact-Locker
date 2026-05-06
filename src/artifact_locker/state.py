@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from time import time
 from typing import Any
@@ -23,7 +23,7 @@ class LocalStateRecord:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "LocalStateRecord":
+    def from_dict(cls, data: dict[str, Any]) -> LocalStateRecord:
         return cls(
             artifact_id=data["artifact_id"],
             local_path=data["local_path"],
@@ -45,9 +45,7 @@ def load_state(path: Path) -> dict[str, LocalStateRecord]:
 def write_state(path: Path, records: dict[str, LocalStateRecord]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "records": {
-            artifact_id: records[artifact_id].to_dict() for artifact_id in sorted(records)
-        }
+        "records": {artifact_id: records[artifact_id].to_dict() for artifact_id in sorted(records)}
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
@@ -59,4 +57,3 @@ def make_state_record(artifact_id: str, local_path: Path, sha256: str) -> LocalS
         sha256=sha256,
         synced_at_epoch=int(time()),
     )
-

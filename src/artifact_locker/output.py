@@ -10,4 +10,3 @@ def dump_json(data: Any) -> str:
 
 def print_json(data: Any) -> None:
     print(dump_json(data))
-

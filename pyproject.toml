@@ -30,6 +30,7 @@ artifact-locker = "artifact_locker.cli:main"
 [project.optional-dependencies]
 dev = [
   "build>=1.2.2",
+  "pre-commit>=4.0.0",
   "pytest>=8.0.0",
   "ruff>=0.11.0",
 ]

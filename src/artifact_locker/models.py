@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
 
 VALID_PROVENANCE_KINDS = {"download", "built", "local"}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -62,7 +61,7 @@ class Provenance:
         return {key: value for key, value in data.items() if value is not None}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Provenance":
+    def from_dict(cls, data: dict[str, Any]) -> Provenance:
         return cls(
             kind=data.get("kind", "local"),
             uri=data.get("uri"),
@@ -99,7 +98,7 @@ class Artifact:
         version: str | None = None,
         sha256: str | None = None,
         active: bool = True,
-    ) -> "Artifact":
+    ) -> Artifact:
         return cls(
             artifact_id=artifact_id,
             filename=filename,
@@ -113,7 +112,7 @@ class Artifact:
         )
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Artifact":
+    def from_dict(cls, data: dict[str, Any]) -> Artifact:
         return cls(
             artifact_id=data["artifact_id"],
             filename=data["filename"],
@@ -134,12 +133,17 @@ class Artifact:
             issues.append(f"invalid sha256 for {self.artifact_id}")
         if self.sha256 and self.staged_name != self.artifact_id:
             issues.append(
-                f"staged_name mismatch for {self.artifact_id}: expected {self.artifact_id}, got {self.staged_name}"
+                "staged_name mismatch for "
+                f"{self.artifact_id}: expected {self.artifact_id}, got {self.staged_name}"
             )
         if not self.sha256 and self.staged_name is not None:
-            issues.append(f"staged_name must be omitted when sha256 is absent for {self.artifact_id}")
+            issues.append(
+                f"staged_name must be omitted when sha256 is absent for {self.artifact_id}"
+            )
         if not any([self.sha256, self.provenance.uri, self.provenance.repo]):
-            issues.append(f"artifact {self.artifact_id} must have a local file, uri, or repo reference")
+            issues.append(
+                f"artifact {self.artifact_id} must have a local file, uri, or repo reference"
+            )
         issues.extend(self.provenance.validate())
         return issues
 
@@ -167,7 +171,11 @@ def load_manifest(path: Path) -> list[Artifact]:
 
 
 def write_manifest(path: Path, artifacts: list[Artifact]) -> None:
-    data = {"artifacts": [artifact.to_dict() for artifact in sorted(artifacts, key=lambda item: item.artifact_id)]}
+    data = {
+        "artifacts": [
+            artifact.to_dict() for artifact in sorted(artifacts, key=lambda item: item.artifact_id)
+        ]
+    }
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 

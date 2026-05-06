@@ -7,8 +7,21 @@ from types import SimpleNamespace
 import pytest
 
 from artifact_locker import cli
-from artifact_locker.models import Artifact, Provenance, compute_sha256, load_manifest, next_artifact_id
-from artifact_locker.oci import CHECKSUMS_TAG, MANIFEST_TAG, OrasError, OrasRunner, checksums_versioned_tag, manifest_versioned_tag
+from artifact_locker.models import (
+    Artifact,
+    Provenance,
+    compute_sha256,
+    load_manifest,
+    next_artifact_id,
+)
+from artifact_locker.oci import (
+    CHECKSUMS_TAG,
+    MANIFEST_TAG,
+    OrasError,
+    OrasRunner,
+    checksums_versioned_tag,
+    manifest_versioned_tag,
+)
 from artifact_locker.paths import init_repo, load_config
 from artifact_locker.state import load_state, write_state
 
@@ -44,7 +57,9 @@ def test_init_creates_layout(tmp_path: Path, capsys: pytest.CaptureFixture[str])
     assert config["local_artifact_dir"].endswith(".local/share/artifact-locker/artifacts")
 
 
-def test_add_local_file_and_remove_by_filename(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_add_local_file_and_remove_by_filename(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     repo = init_repo(tmp_path / "repo").root
     set_local_artifact_dir(repo, tmp_path / "managed-artifacts")
     source = write_sample_file(tmp_path / "SweetPotato.exe", b"abc123")
@@ -90,14 +105,20 @@ def test_add_url_only_artifact_with_interactive_prompts(
 ) -> None:
     repo = init_repo(tmp_path / "repo").root
     set_local_artifact_dir(repo, tmp_path / "managed-artifacts")
-    answers = iter([
-        "linux",
-        "bin",
-        "",
-        "",
-    ])
+    answers = iter(
+        [
+            "linux",
+            "bin",
+            "",
+            "",
+        ]
+    )
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
-    monkeypatch.setattr(cli, "download_url_to_path", lambda uri, destination: destination.write_bytes(b"remote-bytes"))
+    monkeypatch.setattr(
+        cli,
+        "download_url_to_path",
+        lambda uri, destination: destination.write_bytes(b"remote-bytes"),
+    )
     code, _, _ = invoke(
         [
             "--catalog",
@@ -112,14 +133,20 @@ def test_add_url_only_artifact_with_interactive_prompts(
     artifact = manifest[0]
     assert artifact.artifact_id == "art-0001"
     assert artifact.filename == "tool.exe"
-    assert artifact.sha256 == compute_sha256(write_sample_file(tmp_path / "expected.bin", b"remote-bytes"))
+    assert artifact.sha256 == compute_sha256(
+        write_sample_file(tmp_path / "expected.bin", b"remote-bytes")
+    )
     assert artifact.provenance.uri == "https://example.test/tool.exe"
     assert (repo / "staging" / "release-assets" / "art-0001").read_bytes() == b"remote-bytes"
-    assert (tmp_path / "managed-artifacts" / "linux" / "bin" / "tool.exe").read_bytes() == b"remote-bytes"
+    assert (
+        tmp_path / "managed-artifacts" / "linux" / "bin" / "tool.exe"
+    ).read_bytes() == b"remote-bytes"
     assert "art-0001" in (repo / "catalog" / "checksums.txt").read_text()
 
 
-def test_verify_catalog_rejects_invalid_manifest_and_orphans(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_verify_catalog_rejects_invalid_manifest_and_orphans(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     repo_paths = init_repo(tmp_path / "repo")
     bad = Artifact(
         artifact_id="art-0001",
@@ -132,7 +159,9 @@ def test_verify_catalog_rejects_invalid_manifest_and_orphans(tmp_path: Path, cap
         active=True,
         provenance=Provenance(kind="built", repo="https://example.test/repo"),
     )
-    repo_paths.manifest_path.write_text(json.dumps({"artifacts": [bad.to_dict(), bad.to_dict()]}, indent=2) + "\n")
+    repo_paths.manifest_path.write_text(
+        json.dumps({"artifacts": [bad.to_dict(), bad.to_dict()]}, indent=2) + "\n"
+    )
     repo_paths.checksums_path.write_text("badchecksum  art-0001\n")
     write_sample_file(repo_paths.staging_dir / "orphan.bin", b"orphan")
     code, out, _ = invoke(["--catalog", str(repo_paths.root), "verify", "--catalog"], capsys)
@@ -140,7 +169,9 @@ def test_verify_catalog_rejects_invalid_manifest_and_orphans(tmp_path: Path, cap
     assert "duplicate artifact_id" in out or "catalog ok: no" in out
 
 
-def test_verify_local_distinguishes_statuses(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_verify_local_distinguishes_statuses(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     repo_paths = init_repo(tmp_path / "repo")
     set_local_artifact_dir(repo_paths.root, tmp_path / "managed-artifacts")
     config = load_config(repo_paths)
@@ -184,8 +215,10 @@ def test_verify_local_distinguishes_statuses(tmp_path: Path, capsys: pytest.Capt
     artifacts = [missing_artifact, present_artifact, stale_artifact, verified_artifact]
     for artifact in artifacts:
         if artifact.staged_name:
-            write_sample_file(repo_paths.staging_dir / artifact.staged_name, artifact.filename.encode())
-    from artifact_locker.models import write_manifest, write_checksums
+            write_sample_file(
+                repo_paths.staging_dir / artifact.staged_name, artifact.filename.encode()
+            )
+    from artifact_locker.models import write_checksums, write_manifest
 
     write_manifest(repo_paths.manifest_path, artifacts)
     write_checksums(repo_paths.checksums_path, artifacts)
@@ -197,11 +230,17 @@ def test_verify_local_distinguishes_statuses(tmp_path: Path, capsys: pytest.Capt
     write_sample_file(present_path, b"present")
     write_sample_file(stale_path, b"wrong")
     state = {
-        verified_artifact.artifact_id: cli.make_state_record(verified_artifact.artifact_id, verified_path, verified_artifact.sha256 or ""),
-        stale_artifact.artifact_id: cli.make_state_record(stale_artifact.artifact_id, stale_path, stale_artifact.sha256 or ""),
+        verified_artifact.artifact_id: cli.make_state_record(
+            verified_artifact.artifact_id, verified_path, verified_artifact.sha256 or ""
+        ),
+        stale_artifact.artifact_id: cli.make_state_record(
+            stale_artifact.artifact_id, stale_path, stale_artifact.sha256 or ""
+        ),
     }
     write_state(repo_paths.state_path, state)
-    code, out, _ = invoke(["--catalog", str(repo_paths.root), "verify", "--local", "--json"], capsys)
+    code, out, _ = invoke(
+        ["--catalog", str(repo_paths.root), "verify", "--local", "--json"], capsys
+    )
     assert code == 1
     payload = json.loads(out)
     statuses = {row["artifact_id"]: row["status"] for row in payload["local"]["artifacts"]}
@@ -252,11 +291,18 @@ class UnauthorizedPushOras(FakeOras):
             command=["oras", "push", f"{repository}:{tag}"],
             returncode=1,
             stdout="",
-            stderr='Error response from registry: HEAD "https://public.ecr.aws/...": response status code 401: Unauthorized',
+            stderr=(
+                'Error response from registry: HEAD "https://public.ecr.aws/...": '
+                "response status code 401: Unauthorized"
+            ),
         )
 
 
-def test_push_and_pull_use_expected_tags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_push_and_pull_use_expected_tags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     source_repo = init_repo(tmp_path / "source")
     target_repo = init_repo(tmp_path / "target")
     set_local_artifact_dir(source_repo.root, tmp_path / "source-artifacts")
@@ -341,7 +387,10 @@ def test_push_rewrites_stale_empty_checksums_file(
     assert "art-0001" in repo.checksums_path.read_text()
 
 
-def test_find_and_show_json_are_stable(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_find_and_show_json_are_stable(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     repo = init_repo(tmp_path / "repo").root
     set_local_artifact_dir(repo, tmp_path / "managed-artifacts")
     source = write_sample_file(tmp_path / "tool.bin", b"artifact-bytes")
@@ -388,7 +437,11 @@ def test_next_artifact_id_is_incremental() -> None:
     assert next_artifact_id(["art-0001", "art-0003"]) == "art-0004"
 
 
-def test_managed_catalog_is_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_managed_catalog_is_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     source = write_sample_file(tmp_path / "managed.bin", b"managed")
     code, _, _ = invoke(["init"], capsys)
@@ -409,7 +462,11 @@ def test_pull_from_empty_registry_reports_clean_error(
     config = json.loads(repo.config_path.read_text())
     config["oci_repository"] = "public.ecr.aws/o7l3z5i2/artifact-locker"
     repo.config_path.write_text(json.dumps(config, indent=2) + "\n")
-    monkeypatch.setattr(cli, "OrasRunner", lambda: EmptyRegistryOras(tmp_path / "remote"))
+    monkeypatch.setattr(
+        cli,
+        "OrasRunner",
+        lambda: EmptyRegistryOras(tmp_path / "remote"),
+    )
     code, _, err = invoke(["--catalog", str(repo.root), "pull"], capsys)
     assert code == 1
     assert "remote catalog is empty or not initialized" in err
@@ -428,7 +485,11 @@ def test_push_to_public_ecr_reports_login_instructions(
     repo.config_path.write_text(json.dumps(config, indent=2) + "\n")
     source = write_sample_file(tmp_path / "tool.bin", b"artifact")
     invoke(["--catalog", str(repo.root), "add", str(source), "--no-input"], capsys)
-    monkeypatch.setattr(cli, "OrasRunner", lambda: UnauthorizedPushOras(tmp_path / "remote"))
+    monkeypatch.setattr(
+        cli,
+        "OrasRunner",
+        lambda: UnauthorizedPushOras(tmp_path / "remote"),
+    )
     code, _, err = invoke(["--catalog", str(repo.root), "push"], capsys)
     assert code == 1
     assert "registry auth is required for pushes" in err
@@ -436,7 +497,10 @@ def test_push_to_public_ecr_reports_login_instructions(
     assert "oras login -u AWS --password-stdin public.ecr.aws" in err
 
 
-def test_oras_push_uses_relative_filename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_oras_push_uses_relative_filename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[tuple[list[str], Path | None]] = []
 
     def fake_run(self: OrasRunner, args: list[str], cwd: Path | None = None):
@@ -446,10 +510,19 @@ def test_oras_push_uses_relative_filename(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr(OrasRunner, "run", fake_run)
     payload = write_sample_file(tmp_path / "nested" / "artifact.json", b"{}")
     runner = OrasRunner()
-    runner.push_file("example.test/catalog", "artifacts-catalog", payload, "application/json")
+    runner.push_file(
+        "example.test/catalog",
+        "artifacts-catalog",
+        payload,
+        "application/json",
+    )
     assert calls == [
         (
-            ["push", "example.test/catalog:artifacts-catalog", "artifact.json:application/json"],
+            [
+                "push",
+                "example.test/catalog:artifacts-catalog",
+                "artifact.json:application/json",
+            ],
             payload.parent.resolve(),
         )
     ]
