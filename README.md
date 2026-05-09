@@ -3,6 +3,9 @@
 `artifact-locker` stores a small local catalog of files and syncs that current
 state through OCI with `oras`.
 
+The installed CLI is available as both `artifact-locker` and the shorter
+`artlock`.
+
 The model is intentionally simple:
 - every artifact is a real stored file
 - the local catalog is the source of truth
