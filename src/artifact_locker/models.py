@@ -3,12 +3,19 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import secrets
+import threading
+import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 VALID_PROVENANCE_KINDS = {"download", "built", "local"}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_UUID7_LOCK = threading.Lock()
+_UUID7_LAST_MS = -1
+_UUID7_COUNTER = 0
 
 
 def compute_sha256(path: Path) -> str:
@@ -20,14 +27,35 @@ def compute_sha256(path: Path) -> str:
 
 
 def next_artifact_id(existing_ids: list[str]) -> str:
-    numbers = []
-    for artifact_id in existing_ids:
-        if artifact_id.startswith("art-"):
-            suffix = artifact_id.removeprefix("art-")
-            if suffix.isdigit():
-                numbers.append(int(suffix))
-    next_number = max(numbers, default=0) + 1
-    return f"art-{next_number:04d}"
+    del existing_ids
+    return new_uuid7()
+
+
+def new_uuid7() -> str:
+    global _UUID7_LAST_MS, _UUID7_COUNTER
+
+    with _UUID7_LOCK:
+        timestamp_ms = time.time_ns() // 1_000_000
+        if timestamp_ms > _UUID7_LAST_MS:
+            _UUID7_LAST_MS = timestamp_ms
+            _UUID7_COUNTER = secrets.randbits(12)
+        else:
+            timestamp_ms = _UUID7_LAST_MS
+            _UUID7_COUNTER += 1
+            if _UUID7_COUNTER > 0xFFF:
+                _UUID7_LAST_MS += 1
+                timestamp_ms = _UUID7_LAST_MS
+                _UUID7_COUNTER = 0
+
+        rand_b = secrets.randbits(62)
+        value = (
+            ((timestamp_ms & ((1 << 48) - 1)) << 80)
+            | (0x7 << 76)
+            | ((_UUID7_COUNTER & 0xFFF) << 64)
+            | (0b10 << 62)
+            | rand_b
+        )
+    return str(uuid.UUID(int=value))
 
 
 @dataclass(slots=True)

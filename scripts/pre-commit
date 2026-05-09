@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "$script_path" ]]; do
+  link_dir="$(cd "$(dirname "$script_path")" && pwd)"
+  script_path="$(readlink "$script_path")"
+  [[ "$script_path" != /* ]] && script_path="$link_dir/$script_path"
+done
+
+repo_root="$(cd "$(dirname "$script_path")/.." && pwd)"
+cd "$repo_root"
+
+mapfile -t staged_files < <(git diff --cached --name-only --diff-filter=ACMR)
+python_files=()
+for path in "${staged_files[@]}"; do
+  if [[ "$path" == *.py && -f "$path" ]]; then
+    python_files+=("$path")
+  fi
+done
+
+if [[ ${#python_files[@]} -eq 0 ]]; then
+  exit 0
+fi
+
+if [[ -x "venv/bin/ruff" ]]; then
+  ruff_cmd=(venv/bin/ruff)
+elif command -v ruff >/dev/null 2>&1; then
+  ruff_cmd=(ruff)
+else
+  echo "ruff not found. Create the repo venv and install dev dependencies first:" >&2
+  echo "  python3 -m venv venv" >&2
+  echo "  venv/bin/pip install -e .[dev]" >&2
+  exit 1
+fi
+
+"${ruff_cmd[@]}" check --fix "${python_files[@]}"
+"${ruff_cmd[@]}" format "${python_files[@]}"
+git add -- "${python_files[@]}"
+

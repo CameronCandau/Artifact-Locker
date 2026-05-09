@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "artifact-locker"
-version = "0.1.0"
+version = "0.2.0"
 description = "OCI-only artifact catalog CLI"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,7 +30,6 @@ artifact-locker = "artifact_locker.cli:main"
 [project.optional-dependencies]
 dev = [
   "build>=1.2.2",
-  "pre-commit>=4.0.0",
   "pytest>=8.0.0",
   "ruff>=0.11.0",
 ]

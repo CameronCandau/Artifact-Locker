@@ -87,3 +87,6 @@ class OrasRunner:
 
     def repo_tags(self, repository: str) -> CommandResult:
         return self.run(["repo", "tags", repository])
+
+    def delete_manifest(self, repository: str, tag: str) -> CommandResult:
+        return self.run(["manifest", "delete", "--force", ref_for(repository, tag)])

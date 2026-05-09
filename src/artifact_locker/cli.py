@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -39,6 +40,7 @@ from .state import LocalStateRecord, load_state, make_state_record, write_state
 
 PLATFORM_CHOICES = ["windows", "linux", "macos", "cross-platform"]
 CATEGORY_CHOICES = ["bin", "script", "archive", "doc", "source", "other"]
+VERSIONED_CATALOG_TAG_RE = re.compile(r"^v\d{4}-\d{2}-\d{2}-(artifacts|checksums)$")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -177,7 +179,20 @@ def staged_path(paths: RepoPaths, artifact: Artifact) -> Path:
 def local_artifact_path(paths: RepoPaths, config: dict[str, Any], artifact: Artifact) -> Path:
     platform = artifact.platform or "unclassified"
     category = artifact.category or "misc"
-    return paths.artifact_dir(config) / platform / category / artifact.filename
+    return (
+        paths.artifact_dir(config) / platform / category / artifact.artifact_id / artifact.filename
+    )
+
+
+def artifact_exists(artifacts: list[Artifact], candidate: Artifact) -> bool:
+    return any(
+        existing.filename == candidate.filename
+        and existing.version == candidate.version
+        and existing.provenance.uri == candidate.provenance.uri
+        and existing.provenance.repo == candidate.provenance.repo
+        and existing.provenance.commit == candidate.provenance.commit
+        for existing in artifacts
+    )
 
 
 def download_url_to_path(uri: str, destination: Path) -> None:
@@ -472,14 +487,8 @@ def command_add(args: argparse.Namespace) -> int:
             issues = artifact.validate()
             if issues:
                 raise SystemExit("; ".join(issues))
-            if any(
-                existing.filename == artifact.filename
-                and existing.provenance.uri == artifact.provenance.uri
-                for existing in artifacts
-            ):
-                raise SystemExit(
-                    f"artifact already exists for filename/url pair: {artifact.filename}"
-                )
+            if artifact_exists(artifacts, artifact):
+                raise SystemExit(f"artifact already exists: {artifact.filename}")
             materialize_artifact_bytes(paths, config, state, artifact, downloaded_path)
             artifacts.append(artifact)
             sync_checksums(paths, artifacts)
@@ -494,12 +503,8 @@ def command_add(args: argparse.Namespace) -> int:
     issues = artifact.validate()
     if issues:
         raise SystemExit("; ".join(issues))
-    if any(
-        existing.filename == artifact.filename
-        and existing.provenance.uri == artifact.provenance.uri
-        for existing in artifacts
-    ):
-        raise SystemExit(f"artifact already exists for filename/url pair: {artifact.filename}")
+    if artifact_exists(artifacts, artifact):
+        raise SystemExit(f"artifact already exists: {artifact.filename}")
     if materialized_source and artifact.staged_name:
         materialize_artifact_bytes(paths, config, state, artifact, materialized_source)
     artifacts.append(artifact)
@@ -511,13 +516,26 @@ def command_add(args: argparse.Namespace) -> int:
 
 def command_remove(args: argparse.Namespace) -> int:
     paths = discover_repo_paths(args.catalog_path or args.catalog_legacy)
-    _, artifacts, _, state = load_repo(paths)
+    config, artifacts, _, state = load_repo(paths)
     artifact = resolve_artifact(artifacts, args.query)
     artifacts = [item for item in artifacts if item.artifact_id != artifact.artifact_id]
     if artifact.staged_name:
         staged = staged_path(paths, artifact)
         if staged.exists():
             staged.unlink()
+    record = state.get(artifact.artifact_id)
+    payload_path = (
+        Path(record.local_path) if record else local_artifact_path(paths, config, artifact)
+    )
+    if payload_path.exists():
+        payload_path.unlink()
+        parent = payload_path.parent
+        while parent != paths.artifact_dir(config) and parent.exists():
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
     state.pop(artifact.artifact_id, None)
     sync_checksums(paths, artifacts)
     write_state(paths.state_path, state)
@@ -665,20 +683,57 @@ def describe_registry_pull_error(repository: str, tag: str, error: OrasError) ->
 
 
 def describe_registry_push_error(repository: str, tag: str, error: OrasError) -> str:
+    return describe_registry_write_error("push", repository, tag, error)
+
+
+def describe_registry_delete_error(repository: str, tag: str, error: OrasError) -> str:
+    return describe_registry_write_error("delete", repository, tag, error)
+
+
+def describe_registry_write_error(
+    operation: str, repository: str, tag: str, error: OrasError
+) -> str:
     text = f"{error.stdout}\n{error.stderr}".lower()
+    auth_suffix = "for pushes" if operation == "push" else f"for {operation}s"
     if "unauthorized" in text or "authorization token has expired" in text or "denied" in text:
         if repository.startswith("public.ecr.aws/"):
             return (
-                f"oras push failed for {repository}:{tag}: registry auth is required for pushes.\n"
+                f"oras {operation} failed for {repository}:{tag}: "
+                f"registry auth is required {auth_suffix}.\n"
                 "Login to ECR Public first:\n"
                 "aws ecr-public get-login-password --region us-east-1 | "
                 "oras login -u AWS --password-stdin public.ecr.aws"
             )
         return (
-            f"oras push failed for {repository}:{tag}: registry auth is required for pushes.\n"
+            f"oras {operation} failed for {repository}:{tag}: "
+            f"registry auth is required {auth_suffix}.\n"
             "Authenticate with `oras login` for that registry, then retry."
         )
-    return f"oras push failed for {repository}:{tag}: {error}"
+    return f"oras {operation} failed for {repository}:{tag}: {error}"
+
+
+def parse_repo_tags(result: Any) -> set[str]:
+    stdout = getattr(result, "stdout", "")
+    return {line.strip() for line in stdout.splitlines() if line.strip()}
+
+
+def reserved_catalog_tags(tag: str) -> set[str]:
+    return {
+        MANIFEST_TAG,
+        manifest_versioned_tag(tag),
+        CHECKSUMS_TAG,
+        checksums_versioned_tag(tag),
+    }
+
+
+def stale_remote_artifact_tags(remote_tags: set[str], current_artifact_tags: set[str]) -> list[str]:
+    return sorted(
+        tag
+        for tag in remote_tags
+        if tag not in current_artifact_tags
+        and tag not in {MANIFEST_TAG, CHECKSUMS_TAG}
+        and not VERSIONED_CATALOG_TAG_RE.match(tag)
+    )
 
 
 def default_push_tag() -> str:
@@ -698,6 +753,9 @@ def command_push(args: argparse.Namespace) -> int:
     if not runner.available():
         raise SystemExit("oras not found on PATH")
     tag = args.tag or default_push_tag()
+    current_artifact_tags = {
+        artifact.artifact_id for artifact in artifacts if artifact.sha256 and artifact.staged_name
+    }
     try:
         runner.push_file(repository, MANIFEST_TAG, paths.manifest_path, MANIFEST_MEDIA_TYPE)
         runner.push_file(
@@ -715,19 +773,23 @@ def command_push(args: argparse.Namespace) -> int:
                     staged_path(paths, artifact),
                     ARTIFACT_MEDIA_TYPE,
                 )
+        remote_tags = parse_repo_tags(runner.repo_tags(repository))
+        for stale_tag in stale_remote_artifact_tags(remote_tags, current_artifact_tags):
+            runner.delete_manifest(repository, stale_tag)
     except OrasError as error:
         failed_tag = tag
         command_text = " ".join(error.command)
         for candidate in [
-            MANIFEST_TAG,
-            manifest_versioned_tag(tag),
-            CHECKSUMS_TAG,
-            checksums_versioned_tag(tag),
+            *reserved_catalog_tags(tag),
             *[artifact.artifact_id for artifact in artifacts],
         ]:
             if candidate in command_text:
                 failed_tag = candidate
                 break
+        if "manifest delete" in command_text:
+            raise SystemExit(
+                describe_registry_delete_error(repository, failed_tag, error)
+            ) from error
         raise SystemExit(describe_registry_push_error(repository, failed_tag, error)) from error
     print(f"pushed catalog to {repository} with tag {tag}")
     return 0
@@ -769,14 +831,13 @@ def command_pull(args: argparse.Namespace) -> int:
             ) from error
         manifest_file = find_downloaded_file(manifest_dir, "artifacts.json")
         checksums_file = find_downloaded_file(checksums_dir, "checksums.txt")
-        shutil.copy2(manifest_file, paths.manifest_path)
-        shutil.copy2(checksums_file, paths.checksums_path)
-
-        artifacts = load_manifest(paths.manifest_path)
-        checksums = load_checksums(paths.checksums_path)
+        artifacts = load_manifest(manifest_file)
+        checksums = load_checksums(checksums_file)
         schema_issues = verify_remote_catalog(artifacts, checksums)
         if schema_issues:
             raise SystemExit("; ".join(schema_issues))
+        shutil.copy2(manifest_file, paths.manifest_path)
+        shutil.copy2(checksums_file, paths.checksums_path)
 
         state = load_state(paths.state_path)
         downloaded: list[dict[str, Any]] = []

@@ -3,6 +3,9 @@
 `artifact-locker` is a Python CLI for maintaining a local catalog of curated
 artifacts and publishing or pulling that catalog through OCI with `oras`.
 
+New artifacts use raw UUIDv7 `artifact_id` values. Treat those IDs as opaque
+strings everywhere.
+
 The CLI is designed to be operator-friendly:
 - `add` prompts for missing fields instead of forcing you to remember flags
 - most metadata fields are optional
@@ -41,6 +44,13 @@ the managed local artifact directory. The default managed path is:
 
 ```text
 ~/.local/share/artifact-locker/artifacts
+```
+
+Managed payloads are stored by platform, category, and artifact ID to avoid
+filename collisions across versions:
+
+```text
+~/.local/share/artifact-locker/artifacts/<platform>/<category>/<artifact_id>/<filename>
 ```
 
 Registry authentication is intentionally external to the application; use
@@ -94,25 +104,38 @@ artifact-locker push
 When omitted, the push tag defaults to the current date in `vYYYY-MM-DD`
 format.
 
+`push` also prunes stale remote per-artifact tags that are no longer present in
+the current manifest. It preserves the catalog tags
+(`artifacts-catalog`/`artifacts-checksums`) and dated snapshot tags like
+`v2026-05-08-artifacts` and `v2026-05-08-checksums`.
+
+The OCI repository should be treated as owned by `artifact-locker`. Extra
+non-catalog tags in that repository may be removed on `push`.
+
 ## Development
 
 ```bash
-python -m pytest
-python -m build
+python3 -m pytest
+python3 -m build
 ```
 
-For local commit-time linting, install the pre-commit hook once:
+For local commit-time auto-formatting, install the repo-managed pre-commit hook
+once:
 
 ```bash
 pip install -e .[dev]
-pre-commit install
+ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
 ```
 
-Then before each commit, the hook will run Ruff automatically. You can also run
-it manually:
+Then before each commit, the hook will run `ruff check --fix` and
+`ruff format` on staged Python files and re-stage the results automatically.
+You should not need to remember formatter commands for normal use.
+
+If you want to run the same tools manually:
 
 ```bash
-pre-commit run --all-files
+ruff check --fix .
+ruff format .
 ```
 
 For local push-time test gating, install the repo pre-push hook:
