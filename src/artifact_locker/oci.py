@@ -12,14 +12,6 @@ CHECKSUMS_MEDIA_TYPE = "text/plain"
 ARTIFACT_MEDIA_TYPE = "application/octet-stream"
 
 
-def manifest_versioned_tag(tag: str) -> str:
-    return f"{tag}-artifacts"
-
-
-def checksums_versioned_tag(tag: str) -> str:
-    return f"{tag}-checksums"
-
-
 def ref_for(repository: str, tag: str) -> str:
     return f"{repository}:{tag}"
 

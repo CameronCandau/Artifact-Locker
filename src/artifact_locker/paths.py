@@ -9,13 +9,6 @@ from typing import Any
 APP_NAME = "artifact-locker"
 
 
-def xdg_config_home() -> Path:
-    value = os.environ.get("XDG_CONFIG_HOME")
-    if value:
-        return Path(value)
-    return Path.home() / ".config"
-
-
 def xdg_data_home() -> Path:
     value = os.environ.get("XDG_DATA_HOME")
     if value:
@@ -46,18 +39,12 @@ class RepoPaths:
     manifest_path: Path
     checksums_path: Path
     staging_dir: Path
-    state_dir: Path
-    state_path: Path
 
     def artifact_dir(self, config: dict[str, Any]) -> Path:
         candidate = Path(config["local_artifact_dir"]).expanduser()
         if candidate.is_absolute():
             return candidate
         return (self.root / candidate).resolve()
-
-
-def user_config_path() -> Path:
-    return xdg_config_home() / APP_NAME / "config.json"
 
 
 def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
@@ -87,8 +74,6 @@ def resolve_repo_paths(root: Path) -> RepoPaths:
         manifest_path=root / "catalog" / "artifacts.json",
         checksums_path=root / "catalog" / "checksums.txt",
         staging_dir=root / "staging" / "release-assets",
-        state_dir=root / ".artifact-locker",
-        state_path=root / ".artifact-locker" / "state.json",
     )
 
 
@@ -106,9 +91,7 @@ def discover_repo_paths(explicit_catalog: str | None = None, cwd: Path | None = 
 
 
 def load_config(paths: RepoPaths) -> dict[str, Any]:
-    defaults = default_config()
-    config = load_json(user_config_path(), defaults)
-    config.update(load_json(paths.config_path, defaults))
+    config = load_json(paths.config_path, default_config())
     config.setdefault("local_artifact_dir", default_local_artifact_dir())
     return config
 
@@ -117,13 +100,10 @@ def init_repo(root: Path) -> RepoPaths:
     paths = resolve_repo_paths(root.resolve())
     paths.catalog_dir.mkdir(parents=True, exist_ok=True)
     paths.staging_dir.mkdir(parents=True, exist_ok=True)
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
     if not paths.manifest_path.exists():
         paths.manifest_path.write_text('{\n  "artifacts": []\n}\n')
     if not paths.checksums_path.exists():
-        paths.checksums_path.write_text("")
+        paths.checksums_path.write_text("# artifact-locker checksums\n")
     if not paths.config_path.exists():
         paths.config_path.write_text(json.dumps(default_config(), indent=2, sort_keys=True) + "\n")
-    if not paths.state_path.exists():
-        paths.state_path.write_text('{\n  "records": {}\n}\n')
     return paths

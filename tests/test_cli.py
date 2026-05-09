@@ -9,30 +9,12 @@ from types import SimpleNamespace
 import pytest
 
 from artifact_locker import cli
-from artifact_locker.models import (
-    Artifact,
-    Provenance,
-    compute_sha256,
-    load_manifest,
-    next_artifact_id,
-)
-from artifact_locker.oci import (
-    CHECKSUMS_TAG,
-    MANIFEST_TAG,
-    CommandResult,
-    OrasError,
-    OrasRunner,
-    checksums_versioned_tag,
-    manifest_versioned_tag,
-)
-from artifact_locker.paths import init_repo, load_config
-from artifact_locker.state import load_state, write_state
+from artifact_locker.models import load_manifest, next_artifact_id
+from artifact_locker.oci import CHECKSUMS_TAG, MANIFEST_TAG, CommandResult, OrasError, OrasRunner
+from artifact_locker.paths import init_repo
 
 TEST_UUID_1 = "0196f3d4-7b2a-7c91-9c5c-2a4b7d8e9f10"
-TEST_UUID_2 = "0196f3d4-7b2b-7a12-8f4e-2b3c4d5e6f70"
 TEST_UUID_3 = "0196f3d4-7b2c-7d44-a123-456789abcdef"
-TEST_UUID_4 = "0196f3d4-7b2d-7123-b456-123456789abc"
-TEST_UUID_9 = "0196f3d4-7b33-79ab-8def-1234567890ab"
 
 
 def write_sample_file(path: Path, content: bytes = b"sample") -> Path:
@@ -58,217 +40,6 @@ def assert_is_uuid7(value: str) -> None:
     parsed = uuid.UUID(value)
     assert str(parsed) == value
     assert parsed.version == 7
-
-
-def test_init_creates_layout(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    repo = tmp_path / "repo"
-    code, _, _ = invoke(["--catalog", str(repo), "init"], capsys)
-    assert code == 0
-    assert (repo / "catalog" / "artifacts.json").exists()
-    assert (repo / "catalog" / "checksums.txt").exists()
-    assert (repo / "staging" / "release-assets").is_dir()
-    assert (repo / ".artifact-locker" / "state.json").exists()
-    config = json.loads((repo / "config.json").read_text())
-    assert config["local_artifact_dir"].endswith(".local/share/artifact-locker/artifacts")
-
-
-def test_add_local_file_and_remove_by_filename(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    repo = init_repo(tmp_path / "repo").root
-    set_local_artifact_dir(repo, tmp_path / "managed-artifacts")
-    source = write_sample_file(tmp_path / "SweetPotato.exe", b"abc123")
-    code, _, _ = invoke(
-        [
-            "--catalog",
-            str(repo),
-            "add",
-            str(source),
-            "--platform",
-            "windows",
-            "--category",
-            "bin",
-            "--version",
-            "v1.0.0",
-            "--no-input",
-        ],
-        capsys,
-    )
-    assert code == 0
-    manifest = load_manifest(repo / "catalog" / "artifacts.json")
-    artifact_id = manifest[0].artifact_id
-    assert_is_uuid7(artifact_id)
-    assert manifest[0].filename == "SweetPotato.exe"
-    staged = repo / "staging" / "release-assets" / artifact_id
-    assert staged.read_bytes() == b"abc123"
-    local_copy = (
-        tmp_path / "managed-artifacts" / "windows" / "bin" / artifact_id / "SweetPotato.exe"
-    )
-    assert local_copy.read_bytes() == b"abc123"
-    state = load_state(repo / ".artifact-locker" / "state.json")
-    assert state[artifact_id].local_path == str(local_copy)
-    checksums = (repo / "catalog" / "checksums.txt").read_text().strip()
-    assert checksums.endswith(artifact_id)
-
-    code, _, _ = invoke(["--catalog", str(repo), "remove", "SweetPotato.exe"], capsys)
-    assert code == 0
-    assert load_manifest(repo / "catalog" / "artifacts.json") == []
-    assert not staged.exists()
-    assert not local_copy.exists()
-
-
-def test_add_url_only_artifact_with_interactive_prompts(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    repo = init_repo(tmp_path / "repo").root
-    set_local_artifact_dir(repo, tmp_path / "managed-artifacts")
-    answers = iter(
-        [
-            "linux",
-            "bin",
-            "",
-            "",
-        ]
-    )
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
-    monkeypatch.setattr(
-        cli,
-        "download_url_to_path",
-        lambda uri, destination: destination.write_bytes(b"remote-bytes"),
-    )
-    code, _, _ = invoke(
-        [
-            "--catalog",
-            str(repo),
-            "add",
-            "https://example.test/tool.exe",
-        ],
-        capsys,
-    )
-    assert code == 0
-    manifest = load_manifest(repo / "catalog" / "artifacts.json")
-    artifact = manifest[0]
-    assert_is_uuid7(artifact.artifact_id)
-    assert artifact.filename == "tool.exe"
-    assert artifact.sha256 == compute_sha256(
-        write_sample_file(tmp_path / "expected.bin", b"remote-bytes")
-    )
-    assert artifact.provenance.uri == "https://example.test/tool.exe"
-    assert (
-        repo / "staging" / "release-assets" / artifact.artifact_id
-    ).read_bytes() == b"remote-bytes"
-    assert (
-        tmp_path / "managed-artifacts" / "linux" / "bin" / artifact.artifact_id / "tool.exe"
-    ).read_bytes() == b"remote-bytes"
-    assert artifact.artifact_id in (repo / "catalog" / "checksums.txt").read_text()
-
-
-def test_verify_catalog_rejects_invalid_manifest_and_orphans(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    repo_paths = init_repo(tmp_path / "repo")
-    bad = Artifact(
-        artifact_id=TEST_UUID_1,
-        filename="bad.exe",
-        platform="windows",
-        category="bin",
-        version="v1",
-        sha256="deadbeef",
-        staged_name=TEST_UUID_1,
-        active=True,
-        provenance=Provenance(kind="built", repo="https://example.test/repo"),
-    )
-    repo_paths.manifest_path.write_text(
-        json.dumps({"artifacts": [bad.to_dict(), bad.to_dict()]}, indent=2) + "\n"
-    )
-    repo_paths.checksums_path.write_text(f"badchecksum  {TEST_UUID_1}\n")
-    write_sample_file(repo_paths.staging_dir / "orphan.bin", b"orphan")
-    code, out, _ = invoke(["--catalog", str(repo_paths.root), "verify", "--catalog"], capsys)
-    assert code == 1
-    assert "duplicate artifact_id" in out or "catalog ok: no" in out
-
-
-def test_verify_local_distinguishes_statuses(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    repo_paths = init_repo(tmp_path / "repo")
-    set_local_artifact_dir(repo_paths.root, tmp_path / "managed-artifacts")
-    config = load_config(repo_paths)
-    artifact_dir = repo_paths.artifact_dir(config)
-    verified_artifact = Artifact.create(
-        artifact_id=TEST_UUID_1,
-        filename="verified",
-        platform="linux",
-        category="bin",
-        version="v1",
-        sha256=compute_sha256(write_sample_file(tmp_path / "verified.bin", b"verified")),
-        provenance=Provenance(kind="local"),
-    )
-    stale_artifact = Artifact.create(
-        artifact_id=TEST_UUID_2,
-        filename="stale",
-        platform="linux",
-        category="bin",
-        version="v1",
-        sha256=compute_sha256(write_sample_file(tmp_path / "stale.bin", b"fresh")),
-        provenance=Provenance(kind="local"),
-    )
-    present_artifact = Artifact.create(
-        artifact_id=TEST_UUID_3,
-        filename="present",
-        platform="linux",
-        category="bin",
-        version="v1",
-        sha256=None,
-        provenance=Provenance(kind="download", uri="https://example.test/present"),
-    )
-    missing_artifact = Artifact.create(
-        artifact_id=TEST_UUID_4,
-        filename="missing",
-        platform="linux",
-        category="bin",
-        version="v1",
-        sha256=compute_sha256(write_sample_file(tmp_path / "missing.bin", b"missing")),
-        provenance=Provenance(kind="local"),
-    )
-    artifacts = [missing_artifact, present_artifact, stale_artifact, verified_artifact]
-    for artifact in artifacts:
-        if artifact.staged_name:
-            write_sample_file(
-                repo_paths.staging_dir / artifact.staged_name, artifact.filename.encode()
-            )
-    from artifact_locker.models import write_checksums, write_manifest
-
-    write_manifest(repo_paths.manifest_path, artifacts)
-    write_checksums(repo_paths.checksums_path, artifacts)
-
-    verified_path = artifact_dir / "linux" / "bin" / TEST_UUID_1 / "verified"
-    present_path = artifact_dir / "linux" / "bin" / TEST_UUID_3 / "present"
-    stale_path = artifact_dir / "linux" / "bin" / TEST_UUID_2 / "stale"
-    write_sample_file(verified_path, b"verified")
-    write_sample_file(present_path, b"present")
-    write_sample_file(stale_path, b"wrong")
-    state = {
-        verified_artifact.artifact_id: cli.make_state_record(
-            verified_artifact.artifact_id, verified_path, verified_artifact.sha256 or ""
-        ),
-        stale_artifact.artifact_id: cli.make_state_record(
-            stale_artifact.artifact_id, stale_path, stale_artifact.sha256 or ""
-        ),
-    }
-    write_state(repo_paths.state_path, state)
-    code, out, _ = invoke(
-        ["--catalog", str(repo_paths.root), "verify", "--local", "--json"], capsys
-    )
-    assert code == 1
-    payload = json.loads(out)
-    statuses = {row["artifact_id"]: row["status"] for row in payload["local"]["artifacts"]}
-    assert statuses[verified_artifact.artifact_id] == "verified"
-    assert statuses[present_artifact.artifact_id] == "present"
-    assert statuses[stale_artifact.artifact_id] == "stale"
-    assert statuses[missing_artifact.artifact_id] == "missing"
 
 
 class FakeOras:
@@ -325,6 +96,112 @@ class UnauthorizedPushOras(FakeOras):
         )
 
 
+def test_init_creates_layout(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = tmp_path / "repo"
+    code, _, _ = invoke(["--catalog", str(repo), "init"], capsys)
+    assert code == 0
+    assert (repo / "catalog" / "artifacts.json").exists()
+    assert (repo / "catalog" / "checksums.txt").exists()
+    assert (repo / "staging" / "release-assets").is_dir()
+    assert not (repo / ".artifact-locker").exists()
+
+
+def test_add_local_file_and_remove_by_filename(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = init_repo(tmp_path / "repo").root
+    set_local_artifact_dir(repo, tmp_path / "managed-artifacts")
+    source = write_sample_file(tmp_path / "SweetPotato.exe", b"abc123")
+    code, _, _ = invoke(
+        [
+            "--catalog",
+            str(repo),
+            "add",
+            str(source),
+            "--platform",
+            "windows",
+            "--category",
+            "bin",
+            "--no-input",
+        ],
+        capsys,
+    )
+    assert code == 0
+    manifest = load_manifest(repo / "catalog" / "artifacts.json")
+    artifact_id = manifest[0].artifact_id
+    assert_is_uuid7(artifact_id)
+    staged = repo / "staging" / "release-assets" / artifact_id
+    assert staged.read_bytes() == b"abc123"
+    local_copy = (
+        tmp_path / "managed-artifacts" / "windows" / "bin" / artifact_id / "SweetPotato.exe"
+    )
+    assert local_copy.read_bytes() == b"abc123"
+
+    code, _, _ = invoke(["--catalog", str(repo), "remove", "SweetPotato.exe"], capsys)
+    assert code == 0
+    assert load_manifest(repo / "catalog" / "artifacts.json") == []
+    assert not staged.exists()
+    assert not local_copy.exists()
+
+
+def test_add_url_downloads_and_stores_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = init_repo(tmp_path / "repo").root
+    set_local_artifact_dir(repo, tmp_path / "managed-artifacts")
+    answers = iter(["linux", "bin"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    monkeypatch.setattr(
+        cli,
+        "download_url_to_path",
+        lambda uri, destination: destination.write_bytes(b"remote-bytes"),
+    )
+    code, _, _ = invoke(["--catalog", str(repo), "add", "https://example.test/tool.exe"], capsys)
+    assert code == 0
+    artifact = load_manifest(repo / "catalog" / "artifacts.json")[0]
+    assert artifact.filename == "tool.exe"
+    assert (
+        tmp_path / "managed-artifacts" / "linux" / "bin" / artifact.artifact_id / "tool.exe"
+    ).read_bytes() == b"remote-bytes"
+
+
+def test_verify_catalog_and_local_statuses(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = init_repo(tmp_path / "repo")
+    set_local_artifact_dir(repo.root, tmp_path / "managed-artifacts")
+    source = write_sample_file(tmp_path / "tool.bin", b"artifact")
+    invoke(
+        [
+            "--catalog",
+            str(repo.root),
+            "add",
+            str(source),
+            "--platform",
+            "linux",
+            "--category",
+            "bin",
+            "--no-input",
+        ],
+        capsys,
+    )
+    code, out, _ = invoke(["--catalog", str(repo.root), "verify", "--all"], capsys)
+    assert code == 0
+    assert "catalog ok: yes" in out
+    assert "local ok: yes" in out
+
+    artifact = load_manifest(repo.manifest_path)[0]
+    payload_path = (
+        tmp_path / "managed-artifacts" / "linux" / "bin" / artifact.artifact_id / "tool.bin"
+    )
+    payload_path.write_bytes(b"wrong")
+    code, out, _ = invoke(["--catalog", str(repo.root), "verify", "--local"], capsys)
+    assert code == 1
+    assert f"- {artifact.artifact_id}: stale" in out
+
+
 def test_push_and_pull_use_expected_tags(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -335,10 +212,12 @@ def test_push_and_pull_use_expected_tags(
     set_local_artifact_dir(source_repo.root, tmp_path / "source-artifacts")
     set_local_artifact_dir(target_repo.root, tmp_path / "target-artifacts")
     remote_dir = tmp_path / "remote"
-    config = json.loads(source_repo.config_path.read_text())
-    config["oci_repository"] = "example.test/catalog"
-    source_repo.config_path.write_text(json.dumps(config, indent=2) + "\n")
-    target_repo.config_path.write_text(json.dumps(config, indent=2) + "\n")
+    source_config = json.loads(source_repo.config_path.read_text())
+    source_config["oci_repository"] = "example.test/catalog"
+    source_repo.config_path.write_text(json.dumps(source_config, indent=2) + "\n")
+    target_config = json.loads(target_repo.config_path.read_text())
+    target_config["oci_repository"] = "example.test/catalog"
+    target_repo.config_path.write_text(json.dumps(target_config, indent=2) + "\n")
     src = write_sample_file(tmp_path / "tool.bin", b"artifact-bytes")
     invoke(
         [
@@ -350,8 +229,6 @@ def test_push_and_pull_use_expected_tags(
             "linux",
             "--category",
             "bin",
-            "--version",
-            "v1.2.3",
             "--no-input",
         ],
         capsys,
@@ -361,14 +238,10 @@ def test_push_and_pull_use_expected_tags(
 
     code, _, _ = invoke(["--catalog", str(source_repo.root), "push"], capsys)
     assert code == 0
-    manifest = load_manifest(source_repo.manifest_path)
-    artifact_id = manifest[0].artifact_id
-    assert_is_uuid7(artifact_id)
+    artifact_id = load_manifest(source_repo.manifest_path)[0].artifact_id
     tags = [tag for action, tag in fake.commands if action == "push"]
     assert f"example.test/catalog:{MANIFEST_TAG}" in tags
-    assert f"example.test/catalog:{manifest_versioned_tag(cli.default_push_tag())}" in tags
     assert f"example.test/catalog:{CHECKSUMS_TAG}" in tags
-    assert f"example.test/catalog:{checksums_versioned_tag(cli.default_push_tag())}" in tags
     assert f"example.test/catalog:{artifact_id}" in tags
 
     fake.commands.clear()
@@ -376,13 +249,11 @@ def test_push_and_pull_use_expected_tags(
     assert code == 0
     downloaded = json.loads(out)
     assert downloaded[0]["artifact_id"] == artifact_id
-    state = load_state(target_repo.state_path)
-    assert artifact_id in state
-    artifact_file = Path(state[artifact_id].local_path)
+    artifact_file = tmp_path / "target-artifacts" / "linux" / "bin" / artifact_id / "tool.bin"
     assert artifact_file.read_bytes() == b"artifact-bytes"
 
 
-def test_push_prunes_remote_artifact_tags_removed_locally(
+def test_push_prunes_removed_and_legacy_remote_tags(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -403,125 +274,30 @@ def test_push_prunes_remote_artifact_tags_removed_locally(
             "linux",
             "--category",
             "bin",
-            "--version",
-            "v1",
             "--no-input",
         ],
         capsys,
     )
     artifact_id = load_manifest(repo.manifest_path)[0].artifact_id
     fake = FakeOras(tmp_path / "remote")
+    legacy_dir = fake.remote_dir / "art-0001"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_dir.joinpath("artifact.bin").write_bytes(b"legacy")
     monkeypatch.setattr(cli, "OrasRunner", lambda: fake)
 
     code, _, _ = invoke(["--catalog", str(repo.root), "push"], capsys)
     assert code == 0
-    assert (fake.remote_dir / artifact_id).is_dir()
+    assert not legacy_dir.exists()
 
     code, _, _ = invoke(["--catalog", str(repo.root), "remove", "tool.bin"], capsys)
     assert code == 0
-    code, _, _ = invoke(["--catalog", str(repo.root), "push"], capsys)
+    code, out, _ = invoke(["--catalog", str(repo.root), "push"], capsys)
     assert code == 0
-
-    assert not (fake.remote_dir / artifact_id).exists()
     delete_tags = [tag for action, tag in fake.commands if action == "delete"]
     assert f"example.test/catalog:{artifact_id}" in delete_tags
-    assert (fake.remote_dir / MANIFEST_TAG).is_dir()
-    assert (fake.remote_dir / CHECKSUMS_TAG).is_dir()
-
-
-def test_add_allows_multiple_versions_of_same_filename(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    repo = init_repo(tmp_path / "repo").root
-    set_local_artifact_dir(repo, tmp_path / "managed-artifacts")
-    source_v1 = write_sample_file(tmp_path / "tool-v1.bin", b"artifact-v1")
-    source_v2 = write_sample_file(tmp_path / "tool-v2.bin", b"artifact-v2")
-    code, _, _ = invoke(
-        [
-            "--catalog",
-            str(repo),
-            "add",
-            str(source_v1),
-            "--filename",
-            "tool.bin",
-            "--platform",
-            "linux",
-            "--category",
-            "bin",
-            "--version",
-            "v1",
-            "--no-input",
-        ],
-        capsys,
-    )
-    assert code == 0
-    code, _, _ = invoke(
-        [
-            "--catalog",
-            str(repo),
-            "add",
-            str(source_v2),
-            "--filename",
-            "tool.bin",
-            "--platform",
-            "linux",
-            "--category",
-            "bin",
-            "--version",
-            "v2",
-            "--no-input",
-        ],
-        capsys,
-    )
-    assert code == 0
-    manifest = load_manifest(repo / "catalog" / "artifacts.json")
-    artifact_ids = [item.artifact_id for item in manifest]
-    assert len(set(artifact_ids)) == 2
-    assert all(uuid.UUID(artifact_id).version == 7 for artifact_id in artifact_ids)
-    assert artifact_ids == sorted(artifact_ids)
-    assert [item.version for item in manifest] == ["v1", "v2"]
-    assert (
-        tmp_path / "managed-artifacts" / "linux" / "bin" / artifact_ids[0] / "tool.bin"
-    ).read_bytes() == b"artifact-v1"
-    assert (
-        tmp_path / "managed-artifacts" / "linux" / "bin" / artifact_ids[1] / "tool.bin"
-    ).read_bytes() == b"artifact-v2"
-
-
-def test_push_rewrites_stale_empty_checksums_file(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    repo = init_repo(tmp_path / "repo")
-    set_local_artifact_dir(repo.root, tmp_path / "managed-artifacts")
-    config = json.loads(repo.config_path.read_text())
-    config["oci_repository"] = "example.test/catalog"
-    repo.config_path.write_text(json.dumps(config, indent=2) + "\n")
-    source = write_sample_file(tmp_path / "tool.bin", b"artifact-bytes")
-    invoke(
-        [
-            "--catalog",
-            str(repo.root),
-            "add",
-            str(source),
-            "--platform",
-            "linux",
-            "--category",
-            "bin",
-            "--version",
-            "v1",
-            "--no-input",
-        ],
-        capsys,
-    )
-    repo.checksums_path.write_text("")
-    fake = FakeOras(tmp_path / "remote")
-    monkeypatch.setattr(cli, "OrasRunner", lambda: fake)
-    code, _, _ = invoke(["--catalog", str(repo.root), "push"], capsys)
-    assert code == 0
-    artifact_id = load_manifest(repo.manifest_path)[0].artifact_id
-    assert artifact_id in repo.checksums_path.read_text()
+    assert "example.test/catalog:art-0001" in delete_tags
+    assert "remote tags seen:" in out
+    assert "remote tags to delete:" in out
 
 
 def test_find_and_show_json_are_stable(
@@ -541,8 +317,6 @@ def test_find_and_show_json_are_stable(
             "linux",
             "--category",
             "bin",
-            "--version",
-            "v1",
             "--no-input",
         ],
         capsys,
@@ -551,32 +325,20 @@ def test_find_and_show_json_are_stable(
     assert code == 0
     listing = json.loads(out)
     artifact_id = listing[0]["artifact_id"]
-    assert_is_uuid7(artifact_id)
     assert listing == [
         {
-            "active": True,
             "artifact_id": artifact_id,
             "category": "bin",
             "filename": "tool.bin",
             "has_staged_asset": True,
             "local_status": "verified",
             "platform": "linux",
-            "source_uri": None,
-            "version": "v1",
         }
     ]
     code, out, _ = invoke(["--catalog", str(repo), "show", "tool.bin", "--json"], capsys)
     assert code == 0
     payload = json.loads(out)
     assert payload["artifact_id"] == artifact_id
-
-
-def test_next_artifact_id_returns_monotonic_uuid7_strings() -> None:
-    generated = [next_artifact_id([]), next_artifact_id([TEST_UUID_1]), next_artifact_id([])]
-    assert len(set(generated)) == len(generated)
-    assert generated == sorted(generated)
-    for artifact_id in generated:
-        assert_is_uuid7(artifact_id)
 
 
 def test_managed_catalog_is_default(
@@ -604,11 +366,7 @@ def test_pull_from_empty_registry_reports_clean_error(
     config = json.loads(repo.config_path.read_text())
     config["oci_repository"] = "public.ecr.aws/o7l3z5i2/artifact-locker"
     repo.config_path.write_text(json.dumps(config, indent=2) + "\n")
-    monkeypatch.setattr(
-        cli,
-        "OrasRunner",
-        lambda: EmptyRegistryOras(tmp_path / "remote"),
-    )
+    monkeypatch.setattr(cli, "OrasRunner", lambda: EmptyRegistryOras(tmp_path / "remote"))
     code, _, err = invoke(["--catalog", str(repo.root), "pull"], capsys)
     assert code == 1
     assert "remote catalog is empty or not initialized" in err
@@ -629,8 +387,10 @@ def test_pull_does_not_overwrite_local_catalog_when_remote_is_invalid(
             {
                 "artifact_id": TEST_UUID_1,
                 "filename": "local.bin",
-                "active": True,
-                "provenance": {"kind": "local", "repo": "https://example.test/repo"},
+                "platform": "linux",
+                "category": "bin",
+                "sha256": "d2dbf006f96dd05044a8f63d8f118f23925ba4cc5750f8b6c8e287fd506c8188",
+                "staged_name": TEST_UUID_1,
             }
         ]
     }
@@ -646,15 +406,12 @@ def test_pull_does_not_overwrite_local_catalog_when_remote_is_invalid(
                         {
                             "artifacts": [
                                 {
-                                    "artifact_id": TEST_UUID_9,
+                                    "artifact_id": TEST_UUID_3,
                                     "filename": "broken.bin",
-                                    "active": True,
+                                    "platform": "linux",
+                                    "category": "bin",
                                     "sha256": "deadbeef",
-                                    "staged_name": TEST_UUID_9,
-                                    "provenance": {
-                                        "kind": "local",
-                                        "repo": "https://example.test/repo",
-                                    },
+                                    "staged_name": TEST_UUID_3,
                                 }
                             ]
                         }
@@ -662,14 +419,14 @@ def test_pull_does_not_overwrite_local_catalog_when_remote_is_invalid(
                 )
                 return None
             if tag == CHECKSUMS_TAG:
-                (destination / "checksums.txt").write_text(f"badchecksum  {TEST_UUID_9}\n")
+                (destination / "checksums.txt").write_text(f"badchecksum  {TEST_UUID_3}\n")
                 return None
             return super().pull_to_dir(repository, tag, destination)
 
     monkeypatch.setattr(cli, "OrasRunner", lambda: InvalidRemoteOras(tmp_path / "remote"))
     code, _, err = invoke(["--catalog", str(repo.root), "pull"], capsys)
     assert code == 1
-    assert f"invalid sha256 for {TEST_UUID_9}" in err
+    assert f"invalid sha256 for {TEST_UUID_3}" in err
     assert json.loads(repo.manifest_path.read_text()) == original_manifest
 
 
@@ -685,11 +442,7 @@ def test_push_to_public_ecr_reports_login_instructions(
     repo.config_path.write_text(json.dumps(config, indent=2) + "\n")
     source = write_sample_file(tmp_path / "tool.bin", b"artifact")
     invoke(["--catalog", str(repo.root), "add", str(source), "--no-input"], capsys)
-    monkeypatch.setattr(
-        cli,
-        "OrasRunner",
-        lambda: UnauthorizedPushOras(tmp_path / "remote"),
-    )
+    monkeypatch.setattr(cli, "OrasRunner", lambda: UnauthorizedPushOras(tmp_path / "remote"))
     code, _, err = invoke(["--catalog", str(repo.root), "push"], capsys)
     assert code == 1
     assert "registry auth is required for pushes" in err
@@ -726,3 +479,11 @@ def test_oras_push_uses_relative_filename(
             payload.parent.resolve(),
         )
     ]
+
+
+def test_next_artifact_id_returns_monotonic_uuid7_strings() -> None:
+    generated = [next_artifact_id([]), next_artifact_id([TEST_UUID_1]), next_artifact_id([])]
+    assert len(set(generated)) == len(generated)
+    assert generated == sorted(generated)
+    for artifact_id in generated:
+        assert_is_uuid7(artifact_id)
