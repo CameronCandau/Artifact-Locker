@@ -132,9 +132,7 @@ def test_add_local_file_and_remove_by_filename(
     assert_is_uuid7(artifact_id)
     staged = repo / "staging" / "release-assets" / artifact_id
     assert staged.read_bytes() == b"abc123"
-    local_copy = (
-        tmp_path / "managed-artifacts" / "windows" / "bin" / artifact_id / "SweetPotato.exe"
-    )
+    local_copy = tmp_path / "managed-artifacts" / "windows" / "SweetPotato.exe"
     assert local_copy.read_bytes() == b"abc123"
 
     code, _, _ = invoke(["--catalog", str(repo), "remove", "SweetPotato.exe"], capsys)
@@ -151,7 +149,7 @@ def test_add_url_downloads_and_stores_bytes(
 ) -> None:
     repo = init_repo(tmp_path / "repo").root
     set_local_artifact_dir(repo, tmp_path / "managed-artifacts")
-    answers = iter(["linux", "bin"])
+    answers = iter(["tool.exe", "linux", "bin"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     monkeypatch.setattr(
         cli,
@@ -162,9 +160,7 @@ def test_add_url_downloads_and_stores_bytes(
     assert code == 0
     artifact = load_manifest(repo / "catalog" / "artifacts.json")[0]
     assert artifact.filename == "tool.exe"
-    assert (
-        tmp_path / "managed-artifacts" / "linux" / "bin" / artifact.artifact_id / "tool.exe"
-    ).read_bytes() == b"remote-bytes"
+    assert (tmp_path / "managed-artifacts" / "linux" / "tool.exe").read_bytes() == b"remote-bytes"
 
 
 def test_verify_catalog_and_local_statuses(
@@ -193,13 +189,49 @@ def test_verify_catalog_and_local_statuses(
     assert "local ok: yes" in out
 
     artifact = load_manifest(repo.manifest_path)[0]
-    payload_path = (
-        tmp_path / "managed-artifacts" / "linux" / "bin" / artifact.artifact_id / "tool.bin"
-    )
+    payload_path = tmp_path / "managed-artifacts" / "linux" / "tool.bin"
     payload_path.write_bytes(b"wrong")
     code, out, _ = invoke(["--catalog", str(repo.root), "verify", "--local"], capsys)
     assert code == 1
     assert f"- {artifact.artifact_id}: stale" in out
+
+
+def test_verify_and_remove_support_legacy_nested_local_paths(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = init_repo(tmp_path / "repo")
+    managed = tmp_path / "managed-artifacts"
+    set_local_artifact_dir(repo.root, managed)
+    source = write_sample_file(tmp_path / "tool.bin", b"artifact")
+    invoke(
+        [
+            "--catalog",
+            str(repo.root),
+            "add",
+            str(source),
+            "--platform",
+            "linux",
+            "--category",
+            "bin",
+            "--no-input",
+        ],
+        capsys,
+    )
+
+    artifact = load_manifest(repo.manifest_path)[0]
+    flat_path = managed / "linux" / "tool.bin"
+    legacy_path = managed / "linux" / "bin" / artifact.artifact_id / "tool.bin"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_bytes(flat_path.read_bytes())
+    flat_path.unlink()
+
+    code, out, _ = invoke(["--catalog", str(repo.root), "verify", "--local"], capsys)
+    assert code == 0
+    assert f"- {artifact.artifact_id}: verified" in out
+
+    code, _, _ = invoke(["--catalog", str(repo.root), "remove", "tool.bin"], capsys)
+    assert code == 0
+    assert not legacy_path.exists()
 
 
 def test_push_and_pull_use_expected_tags(
@@ -249,8 +281,74 @@ def test_push_and_pull_use_expected_tags(
     assert code == 0
     downloaded = json.loads(out)
     assert downloaded[0]["artifact_id"] == artifact_id
-    artifact_file = tmp_path / "target-artifacts" / "linux" / "bin" / artifact_id / "tool.bin"
+    artifact_file = tmp_path / "target-artifacts" / "linux" / "tool.bin"
     assert artifact_file.read_bytes() == b"artifact-bytes"
+
+
+def test_add_interactive_prompts_for_filename_with_default_and_allows_rename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = init_repo(tmp_path / "repo").root
+    set_local_artifact_dir(repo, tmp_path / "managed-artifacts")
+    source = write_sample_file(tmp_path / "tool.exe", b"artifact")
+    answers = iter(["tool-renamed.exe", "windows", "bin"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    code, _, _ = invoke(["--catalog", str(repo), "add", str(source)], capsys)
+
+    assert code == 0
+    artifact = load_manifest(repo / "catalog" / "artifacts.json")[0]
+    assert artifact.filename == "tool-renamed.exe"
+    renamed_path = tmp_path / "managed-artifacts" / "windows" / "tool-renamed.exe"
+    assert renamed_path.read_bytes() == b"artifact"
+
+
+def test_add_rejects_duplicate_platform_filename_across_categories(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = init_repo(tmp_path / "repo").root
+    set_local_artifact_dir(repo, tmp_path / "managed-artifacts")
+    source_a = write_sample_file(tmp_path / "tool-a.exe", b"a")
+    source_b = write_sample_file(tmp_path / "tool-b.exe", b"b")
+
+    code, _, _ = invoke(
+        [
+            "--catalog",
+            str(repo),
+            "add",
+            str(source_a),
+            "--platform",
+            "windows",
+            "--category",
+            "bin",
+            "--filename",
+            "same.exe",
+            "--no-input",
+        ],
+        capsys,
+    )
+    assert code == 0
+
+    code, _, err = invoke(
+        [
+            "--catalog",
+            str(repo),
+            "add",
+            str(source_b),
+            "--platform",
+            "windows",
+            "--category",
+            "script",
+            "--filename",
+            "same.exe",
+            "--no-input",
+        ],
+        capsys,
+    )
+    assert code == 1
+    assert "artifact already exists: same.exe" in err
 
 
 def test_push_prunes_removed_and_legacy_remote_tags(

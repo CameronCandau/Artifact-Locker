@@ -130,19 +130,88 @@ def staged_path(paths: RepoPaths, artifact: Artifact) -> Path:
 
 def local_artifact_path(paths: RepoPaths, config: dict[str, Any], artifact: Artifact) -> Path:
     platform = artifact.platform or "unclassified"
+    return paths.artifact_dir(config) / platform / artifact.filename
+
+
+def legacy_local_artifact_path(
+    paths: RepoPaths, config: dict[str, Any], artifact: Artifact
+) -> Path:
+    platform = artifact.platform or "unclassified"
     category = artifact.category or "misc"
     return (
         paths.artifact_dir(config) / platform / category / artifact.artifact_id / artifact.filename
     )
 
 
+def existing_local_artifact_path(
+    paths: RepoPaths, config: dict[str, Any], artifact: Artifact
+) -> Path | None:
+    preferred = local_artifact_path(paths, config, artifact)
+    if preferred.exists():
+        return preferred
+    legacy = legacy_local_artifact_path(paths, config, artifact)
+    if legacy.exists():
+        return legacy
+    return None
+
+
+def remove_local_artifact_bytes(
+    paths: RepoPaths, config: dict[str, Any], artifact: Artifact
+) -> None:
+    for payload_path in [
+        local_artifact_path(paths, config, artifact),
+        legacy_local_artifact_path(paths, config, artifact),
+    ]:
+        if not payload_path.exists():
+            continue
+        payload_path.unlink()
+        parent = payload_path.parent
+        while parent != paths.artifact_dir(config) and parent.exists():
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+
+
+def remove_legacy_local_artifact_bytes(
+    paths: RepoPaths, config: dict[str, Any], artifact: Artifact
+) -> None:
+    payload_path = legacy_local_artifact_path(paths, config, artifact)
+    if not payload_path.exists():
+        return
+    payload_path.unlink()
+    parent = payload_path.parent
+    while parent != paths.artifact_dir(config) and parent.exists():
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+        parent = parent.parent
+
+
 def artifact_exists(artifacts: list[Artifact], candidate: Artifact) -> bool:
     return any(
-        existing.filename == candidate.filename
-        and existing.platform == candidate.platform
-        and existing.category == candidate.category
+        existing.filename == candidate.filename and existing.platform == candidate.platform
         for existing in artifacts
     )
+
+
+def duplicate_local_name_issues(artifacts: list[Artifact]) -> list[str]:
+    seen: dict[tuple[str | None, str], str] = {}
+    issues: list[str] = []
+    for artifact in artifacts:
+        key = (artifact.platform, artifact.filename)
+        existing_id = seen.get(key)
+        if existing_id is not None:
+            issues.append(
+                "duplicate local payload path for "
+                f"platform={artifact.platform or '-'} filename={artifact.filename}: "
+                f"{existing_id}, {artifact.artifact_id}"
+            )
+            continue
+        seen[key] = artifact.artifact_id
+    return issues
 
 
 def download_url_to_path(uri: str, destination: Path) -> None:
@@ -166,6 +235,7 @@ def materialize_artifact_bytes(
     destination = staged_path(paths, artifact)
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_path, destination)
+    remove_legacy_local_artifact_bytes(paths, config, artifact)
     payload_destination = local_artifact_path(paths, config, artifact)
     payload_destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_path, payload_destination)
@@ -212,6 +282,7 @@ def verify_catalog(
     for name in sorted(checksums):
         if name not in staged_names:
             issues.append(f"orphaned checksum entry: {name}")
+    issues.extend(duplicate_local_name_issues(artifacts))
     return issues
 
 
@@ -229,6 +300,7 @@ def verify_remote_catalog(artifacts: list[Artifact], checksums: dict[str, str]) 
     for name in sorted(checksums):
         if name not in staged_names:
             issues.append(f"orphaned checksum entry: {name}")
+    issues.extend(duplicate_local_name_issues(artifacts))
     return issues
 
 
@@ -239,7 +311,9 @@ def local_statuses(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for artifact in artifacts:
-        candidate = local_artifact_path(paths, config, artifact)
+        candidate = existing_local_artifact_path(paths, config, artifact) or local_artifact_path(
+            paths, config, artifact
+        )
         if not candidate.exists():
             status = "missing"
         else:
@@ -345,8 +419,8 @@ def resolve_add_inputs(
         str(local_source) if local_source else source, uri
     )
     filename = default_filename
-    if interactive and not filename:
-        filename = prompt_text("Filename", allow_empty=False)
+    if interactive:
+        filename = prompt_text("Filename", default=default_filename, allow_empty=False)
     if not filename:
         raise SystemExit("filename is required")
 
@@ -409,16 +483,7 @@ def command_remove(args: argparse.Namespace) -> int:
     staged = staged_path(paths, artifact)
     if staged.exists():
         staged.unlink()
-    payload_path = local_artifact_path(paths, config, artifact)
-    if payload_path.exists():
-        payload_path.unlink()
-        parent = payload_path.parent
-        while parent != paths.artifact_dir(config) and parent.exists():
-            try:
-                parent.rmdir()
-            except OSError:
-                break
-            parent = parent.parent
+    remove_local_artifact_bytes(paths, config, artifact)
     sync_checksums(paths, artifacts)
     print(f"removed {artifact.artifact_id}")
     return 0
@@ -714,6 +779,7 @@ def command_pull(args: argparse.Namespace) -> int:
             staged_destination = staged_path(paths, artifact)
             staged_destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(fetched, staged_destination)
+            remove_legacy_local_artifact_bytes(paths, config, artifact)
             payload_destination = local_artifact_path(paths, config, artifact)
             payload_destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(fetched, payload_destination)

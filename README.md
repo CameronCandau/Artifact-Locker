@@ -40,11 +40,16 @@ The model is intentionally simple:
 default the managed repo lives under `~/.local/share/artifact-locker/` and the
 managed payload directory is `~/.local/share/artifact-locker/artifacts`.
 
-Managed payloads are stored by platform, category, and artifact ID:
+Managed payloads are stored in a flat local tree by platform and filename:
 
 ```text
-~/.local/share/artifact-locker/artifacts/<platform>/<category>/<artifact_id>/<filename>
+~/.local/share/artifact-locker/artifacts/<platform>/<filename>
 ```
+
+Artifact IDs remain in the catalog and OCI tags. Older local trees that still
+use per-artifact ID directories are tolerated and are migrated forward on write.
+Category remains catalog metadata for filtering and notes, but it is no longer
+part of the local serving path.
 
 Registry authentication is external. For ECR Public:
 
