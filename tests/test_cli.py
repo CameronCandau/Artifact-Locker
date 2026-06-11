@@ -106,6 +106,84 @@ def test_init_creates_layout(tmp_path: Path, capsys: pytest.CaptureFixture[str])
     assert not (repo / ".artifact-locker").exists()
 
 
+def test_bootstrap_writes_config_without_pull(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = tmp_path / "repo"
+    artifact_dir = tmp_path / "payloads"
+    code, _, _ = invoke(
+        [
+            "--catalog",
+            str(repo),
+            "bootstrap",
+            "--repository",
+            "example.test/catalog",
+            "--artifact-dir",
+            str(artifact_dir),
+            "--skip-pull",
+        ],
+        capsys,
+    )
+    assert code == 0
+    config = json.loads((repo / "config.json").read_text())
+    assert config["oci_repository"] == "example.test/catalog"
+    assert config["local_artifact_dir"] == str(artifact_dir)
+    assert (repo / "catalog" / "artifacts.json").exists()
+    assert (repo / "staging" / "release-assets").is_dir()
+
+
+def test_bootstrap_can_pull_remote_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source_repo = init_repo(tmp_path / "source")
+    set_local_artifact_dir(source_repo.root, tmp_path / "source-artifacts")
+    source_config = json.loads(source_repo.config_path.read_text())
+    source_config["oci_repository"] = "example.test/catalog"
+    source_repo.config_path.write_text(json.dumps(source_config, indent=2) + "\n")
+    remote_dir = tmp_path / "remote"
+    src = write_sample_file(tmp_path / "tool.bin", b"artifact-bytes")
+    invoke(
+        [
+            "--catalog",
+            str(source_repo.root),
+            "add",
+            str(src),
+            "--platform",
+            "linux",
+            "--category",
+            "bin",
+            "--no-input",
+        ],
+        capsys,
+    )
+    fake = FakeOras(remote_dir)
+    monkeypatch.setattr(cli, "OrasRunner", lambda: fake)
+    code, _, _ = invoke(["--catalog", str(source_repo.root), "push"], capsys)
+    assert code == 0
+
+    target_repo = tmp_path / "target"
+    target_artifacts = tmp_path / "target-artifacts"
+    fake.commands.clear()
+    code, _, _ = invoke(
+        [
+            "--catalog",
+            str(target_repo),
+            "bootstrap",
+            "--repository",
+            "example.test/catalog",
+            "--artifact-dir",
+            str(target_artifacts),
+        ],
+        capsys,
+    )
+    assert code == 0
+    manifest = load_manifest(target_repo / "catalog" / "artifacts.json")
+    assert manifest[0].filename == "tool.bin"
+    assert (target_artifacts / "linux" / "tool.bin").read_bytes() == b"artifact-bytes"
+
+
 def test_add_local_file_and_remove_by_filename(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

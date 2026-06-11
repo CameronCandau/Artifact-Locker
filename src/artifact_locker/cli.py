@@ -45,6 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("init")
 
+    bootstrap = subparsers.add_parser("bootstrap")
+    bootstrap.add_argument("--repository")
+    bootstrap.add_argument("--artifact-dir")
+    bootstrap.add_argument("--skip-pull", action="store_true")
+    bootstrap.add_argument("--json", action="store_true")
+
     add = subparsers.add_parser("add")
     add.add_argument("source", nargs="?")
     add.add_argument("--platform")
@@ -387,6 +393,48 @@ def command_init(args: argparse.Namespace) -> int:
     root = Path(args.catalog_path).resolve() if args.catalog_path else discover_repo_paths().root
     paths = init_repo(root)
     print(f"initialized repo at {paths.root}")
+    return 0
+
+
+def command_bootstrap(args: argparse.Namespace) -> int:
+    root = Path(args.catalog_path).resolve() if args.catalog_path else discover_repo_paths().root
+    paths = init_repo(root)
+    config = load_config(paths)
+
+    if args.repository is not None:
+        config["oci_repository"] = args.repository
+    if args.artifact_dir is not None:
+        config["local_artifact_dir"] = args.artifact_dir
+
+    paths.config_path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+
+    result: dict[str, Any] = {
+        "catalog_root": str(paths.root),
+        "config_path": str(paths.config_path),
+        "oci_repository": config.get("oci_repository"),
+        "local_artifact_dir": config.get("local_artifact_dir"),
+        "pulled": False,
+    }
+
+    if not args.skip_pull:
+        pull_args = argparse.Namespace(
+            catalog_path=str(paths.root),
+            platform=None,
+            category=None,
+            json=False,
+        )
+        command_pull(pull_args)
+        result["pulled"] = True
+
+    if args.json:
+        print_json(result)
+    else:
+        print(f"bootstrapped repo at {paths.root}")
+        print(f"config path: {paths.config_path}")
+        print(f"oci repository: {config.get('oci_repository') or '(unset)'}")
+        print(f"local artifact dir: {config.get('local_artifact_dir')}")
+        print(f"pulled remote catalog: {human_bool(result['pulled'])}")
+
     return 0
 
 
@@ -803,6 +851,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     commands = {
         "init": command_init,
+        "bootstrap": command_bootstrap,
         "add": command_add,
         "remove": command_remove,
         "list": command_list,
