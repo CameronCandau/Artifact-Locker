@@ -776,6 +776,7 @@ def find_downloaded_file(directory: Path, preferred_name: str | None = None) -> 
 
 def command_pull(args: argparse.Namespace) -> int:
     paths = discover_repo_paths(args.catalog_path)
+    init_repo(paths.root)
     config = load_config(paths)
     repository = require_repository(config)
     runner = OrasRunner()
